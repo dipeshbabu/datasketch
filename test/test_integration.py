@@ -1,8 +1,11 @@
 import os
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+import datasketch.storage as storage_module
 from datasketch.lsh import MinHashLSH
 from datasketch.minhash import MinHash
 from datasketch.storage import ordered_storage
@@ -28,6 +31,46 @@ STORAGE_CONFIG_CASSANDRA = {
 
 DO_TEST_REDIS = os.environ.get("DO_TEST_REDIS") == "true"
 DO_TEST_CASSANDRA = os.environ.get("DO_TEST_CASSANDRA") == "true"
+
+
+@pytest.mark.skipif(
+    not hasattr(storage_module, "CassandraClient"),
+    reason="cassandra-driver is unavailable",
+)
+def test_cassandra_schema_validation_and_set_upsert():
+    client = object.__new__(storage_module.CassandraClient)
+    client._session = Mock(keyspace="lsh_test")
+    client._session.prepare.return_value = "prepared-schema-query"
+    client._session.execute.return_value = [
+        SimpleNamespace(kind="partition_key", position=0, column_name="key"),
+        SimpleNamespace(kind="clustering", position=0, column_name="value"),
+        SimpleNamespace(kind="clustering", position=1, column_name="ts"),
+        SimpleNamespace(kind="regular", position=-1, column_name="ignored"),
+    ]
+
+    client._validate_table_schema("lsh_table")
+    client._session.prepare.assert_called_once_with(client.QUERY_GET_TABLE_SCHEMA)
+    client._session.execute.assert_called_once_with(
+        "prepared-schema-query",
+        ("lsh_test", "lsh_table"),
+    )
+
+    client._session.execute.return_value = [
+        SimpleNamespace(kind="partition_key", position=0, column_name="key"),
+        SimpleNamespace(kind="clustering", position=0, column_name="value"),
+    ]
+    with pytest.raises(RuntimeError, match="incompatible primary key"):
+        client._validate_table_schema("legacy_table")
+
+    client._stmt_upsert = "set-upsert"
+    client._execute = Mock()
+    client.upsert(b"key", [b"same", b"same"])
+    client._execute.assert_called_once_with(
+        [
+            ("set-upsert", (b"key", b"same")),
+            ("set-upsert", (b"key", b"same")),
+        ]
+    )
 
 
 def _clear_redis_keys(pattern="lsh_test*"):
