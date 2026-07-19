@@ -25,6 +25,22 @@ _FORBIDDEN_OPCODES = {
 }
 
 
+def _is_hashable(key: Any) -> bool:
+    """Return whether ``key`` can actually be hashed.
+
+    ``isinstance(key, Hashable)`` is insufficient for containers such as a
+    tuple that contains a list: the tuple exposes ``__hash__`` but calling it
+    still raises ``TypeError``.
+    """
+    if not isinstance(key, Hashable):
+        return False
+    try:
+        hash(key)
+    except TypeError:
+        return False
+    return True
+
+
 class _RestrictedUnpickler(pickle.Unpickler):
     """Unpickler that forbids importing every global callable and class."""
 
@@ -45,14 +61,14 @@ def loads_key(payload: bytes) -> Hashable:
         key = _RestrictedUnpickler(io.BytesIO(payload)).load()
     except (EOFError, AttributeError, TypeError, ValueError) as error:
         raise pickle.UnpicklingError("invalid serialized LSH key") from error
-    if not isinstance(key, Hashable):
+    if not _is_hashable(key):
         raise pickle.UnpicklingError("serialized LSH key is not hashable")
     return key
 
 
 def dumps_key(key: Hashable) -> bytes:
     """Serialize a key and ensure the restricted loader can read it back."""
-    if not isinstance(key, Hashable):
+    if not _is_hashable(key):
         raise TypeError("LSH keys must be hashable")
     payload = pickle.dumps(key)
     try:

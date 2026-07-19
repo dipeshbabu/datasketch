@@ -1,10 +1,13 @@
+import io
 import pickle
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import mockredis
 import numpy as np
 
+from datasketch.aio import AsyncMinHashLSH
+from datasketch.key_serialization import _RestrictedUnpickler, dumps_key, loads_key
 from datasketch.lsh import MinHashLSH
 from datasketch.minhash import MinHash
 from datasketch.weighted_minhash import WeightedMinHashGenerator
@@ -148,6 +151,35 @@ class TestMinHashLSH(unittest.TestCase):
         with self.assertRaisesRegex(pickle.UnpicklingError, "forbidden"):
             lsh.query(minhash)
         self.assertFalse(backend_payload_executed)
+
+    def test_restricted_key_loader_defensive_errors(self):
+        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
+        with self.assertRaisesRegex(pickle.UnpicklingError, "builtins.str"):
+            unpickler.find_class("builtins", "str")
+        with self.assertRaisesRegex(pickle.UnpicklingError, "persistent IDs"):
+            unpickler.persistent_load("backend-reference")
+
+        with self.assertRaisesRegex(pickle.UnpicklingError, "invalid serialized"):
+            loads_key(b"not a pickle")
+        with self.assertRaisesRegex(pickle.UnpicklingError, "not hashable"):
+            loads_key(pickle.dumps(["list"]))
+        with self.assertRaisesRegex(TypeError, "must be hashable"):
+            dumps_key(["list"])
+
+    def test_prepickle_rejects_structurally_unhashable_tuple(self):
+        key = ([],)
+        with self.assertRaisesRegex(TypeError, "must be hashable"):
+            dumps_key(key)
+        with self.assertRaisesRegex(pickle.UnpicklingError, "not hashable"):
+            loads_key(pickle.dumps(key))
+
+    def test_get_subset_counts_with_prepickled_key(self):
+        lsh = MinHashLSH(threshold=0.5, num_perm=16, prepickle=True)
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        lsh.insert("safe", minhash)
+
+        self.assertEqual(lsh.get_subset_counts("safe"), lsh.get_counts())
 
     def test_query_buffer(self):
         lsh = MinHashLSH(threshold=0.5, num_perm=16)
@@ -631,6 +663,48 @@ class TestWeightedMinHashLSH(unittest.TestCase):
         self.assertTrue("a" in result)
         result = lsh2.query(m2)
         self.assertTrue("b" in result)
+
+
+class TestAsyncMinHashLSHKeySerialization(unittest.IsolatedAsyncioTestCase):
+    async def test_prepickle_paths_use_restricted_serialization(self):
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        lsh = AsyncMinHashLSH(
+            num_perm=16,
+            params=(4, 4),
+            storage_config={"type": "aiomongo"},
+            prepickle=True,
+        )
+        serialized_key = dumps_key("safe")
+        band_hashes = [lsh._H(minhash.hashvalues[start:end]) for start, end in lsh.hashranges]
+        lsh.keys = Mock(
+            has_key=AsyncMock(return_value=True),
+            insert=AsyncMock(),
+            get=AsyncMock(return_value=band_hashes),
+            getmany=AsyncMock(return_value=[band_hashes]),
+            remove=AsyncMock(),
+        )
+        lsh.hashtables = [
+            Mock(
+                insert=AsyncMock(),
+                get=AsyncMock(return_value=[serialized_key]),
+                has_key=AsyncMock(return_value=True),
+                remove_val=AsyncMock(),
+                remove=AsyncMock(),
+            )
+            for _ in range(lsh.b)
+        ]
+
+        await lsh._insert("safe", minhash, check_duplication=False)
+        self.assertEqual(await lsh.query(minhash), ["safe"])
+        self.assertTrue(await lsh.has_key("safe"))
+        self.assertEqual(await lsh._query_b(minhash, lsh.b), {"safe"})
+        self.assertEqual(len(await lsh.get_subset_counts("safe")), lsh.b)
+
+        for hashtable in lsh.hashtables:
+            hashtable.get.return_value = []
+        await lsh.remove("safe")
+        lsh.keys.remove.assert_awaited_once_with(serialized_key, buffer=False)
 
 
 if __name__ == "__main__":
