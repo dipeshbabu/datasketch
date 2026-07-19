@@ -17,6 +17,14 @@ def fake_redis(**kwargs):
     return redis
 
 
+def first_band_hash(data):
+    return data
+
+
+def second_band_hash(data):
+    return data[::-1]
+
+
 class TestMinHashLSH(unittest.TestCase):
     def test_init(self):
         lsh = MinHashLSH(threshold=0.8)
@@ -341,6 +349,28 @@ class TestMinHashLSH(unittest.TestCase):
         lsh4.insert("a", m6)
 
         lsh1.merge(lsh4, check_overlap=False)
+
+    def test_merge_rejects_different_band_hash_functions(self):
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        destination = MinHashLSH(threshold=0.5, num_perm=16, hashfunc=first_band_hash)
+        source = MinHashLSH(threshold=0.5, num_perm=16, hashfunc=second_band_hash)
+        source.insert("source", minhash)
+
+        with self.assertRaisesRegex(ValueError, "different initialization parameters"):
+            destination.merge(source)
+        self.assertNotIn("source", destination)
+
+    def test_merge_rejects_different_key_serialization(self):
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        destination = MinHashLSH(threshold=0.5, num_perm=16, prepickle=False)
+        source = MinHashLSH(threshold=0.5, num_perm=16, prepickle=True)
+        source.insert("source", minhash)
+
+        with self.assertRaisesRegex(ValueError, "different initialization parameters"):
+            destination.merge(source)
+        self.assertNotIn("source", destination)
 
     def test_merge_redis(self):
         with patch("redis.Redis", fake_redis):
