@@ -9,6 +9,19 @@ from datasketch.lsh import MinHashLSH
 from datasketch.minhash import MinHash
 from datasketch.weighted_minhash import WeightedMinHashGenerator
 
+backend_payload_executed = False
+
+
+def execute_backend_payload():
+    global backend_payload_executed
+    backend_payload_executed = True
+    return "compromised"
+
+
+class UnsafeKey:
+    def __reduce__(self):
+        return execute_backend_payload, ()
+
 
 def fake_redis(**kwargs):
     redis = mockredis.mock_redis_client(**kwargs)
@@ -88,6 +101,45 @@ class TestMinHashLSH(unittest.TestCase):
 
         m3 = MinHash(18)
         self.assertRaises(ValueError, lsh.query, m3)
+
+    def test_prepickle_round_trips_primitive_builtin_keys(self):
+        lsh = MinHashLSH(threshold=0.5, num_perm=16, prepickle=True)
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        keys = ["string", 42, b"bytes", ("tuple", 3), frozenset({"set", 4}), None]
+        for key in keys:
+            lsh.insert(key, minhash)
+
+        self.assertEqual(set(lsh.query(minhash)), set(keys))
+
+    def test_prepickle_rejects_custom_key_types_before_insert(self):
+        global backend_payload_executed
+        backend_payload_executed = False
+        lsh = MinHashLSH(threshold=0.5, num_perm=16, prepickle=True)
+        minhash = MinHash(16)
+        minhash.update(b"value")
+
+        with self.assertRaisesRegex(TypeError, "primitive built-in types"):
+            lsh.insert(UnsafeKey(), minhash)
+
+        self.assertFalse(backend_payload_executed)
+        self.assertEqual(len(lsh.keys), 0)
+
+    def test_query_rejects_executable_pickle_from_backend(self):
+        global backend_payload_executed
+        backend_payload_executed = False
+        lsh = MinHashLSH(threshold=0.5, num_perm=16, prepickle=True)
+        minhash = MinHash(16)
+        minhash.update(b"value")
+        lsh.insert("safe", minhash)
+
+        start, end = lsh.hashranges[0]
+        band_hash = lsh._H(minhash.hashvalues[start:end])
+        lsh.hashtables[0].insert(band_hash, pickle.dumps(UnsafeKey()))
+
+        with self.assertRaisesRegex(pickle.UnpicklingError, "forbidden"):
+            lsh.query(minhash)
+        self.assertFalse(backend_payload_executed)
 
     def test_query_buffer(self):
         lsh = MinHashLSH(threshold=0.5, num_perm=16)
