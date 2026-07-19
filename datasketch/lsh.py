@@ -239,8 +239,10 @@ class MinHashLSH:
         of both.
 
         Note:
-            Only num_perm, number of bands and sizes of each band is checked for equivalency of two MinHashLSH indexes.
-            Other initialization parameters threshold, weights, storage_config, prepickle and hash_func are not checked.
+            The indexes must use the same number and size of bands, key
+            serialization mode, band hash function, and byte-key requirements.
+            Threshold, weights, and storage backend may differ when those
+            effective index parameters are equivalent.
 
         Args:
             other (MinHashLSH): The other MinHashLSH.
@@ -353,10 +355,18 @@ class MinHashLSH:
 
     def __equivalent(self, other: MinHashLSH) -> bool:
         """Returns:
-        bool: If the two MinHashLSH have equal num_perm, number of bands, size of each band then two are equivalent.
+        bool: Whether stored keys and band hashes can be copied safely.
 
         """
-        return type(self) is type(other) and self.h == other.h and self.b == other.b and self.r == other.r
+        return (
+            type(self) is type(other)
+            and self.h == other.h
+            and self.b == other.b
+            and self.r == other.r
+            and self.prepickle == other.prepickle
+            and self.hashfunc is other.hashfunc
+            and self._require_bytes_keys == other._require_bytes_keys
+        )
 
     def _merge(self, other: MinHashLSH, check_overlap: bool = False, buffer: bool = False) -> None:
         if self.__equivalent(other):
