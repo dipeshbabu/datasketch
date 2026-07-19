@@ -29,6 +29,10 @@ from test.utils import fake_hash_func
 AFFINE_SCHEMES = ("affine32", "affine64")
 ALL_SCHEMES = ("affine32", "affine64", "legacy")
 
+
+def alternate_fake_hash_func(data):
+    return data + 1
+
 # --------------------------------------------------------------------------
 # Frozen format vectors. These freeze the affine schemes' permutation
 # generation and hash computation: any change to these values is a breaking
@@ -352,6 +356,46 @@ class TestLSHSchemeGuards(unittest.TestCase):
         with self.assertRaises(ValueError):
             restored.query(self._mh("legacy"))
         self.assertIn("k", restored.query(self._mh("affine32")))
+
+    def test_lsh_rejects_different_hash_function(self):
+        first = MinHash(128, hashfunc=fake_hash_func)
+        incompatible = MinHash(128, hashfunc=alternate_fake_hash_func)
+        lsh = MinHashLSH(threshold=0.5, num_perm=128)
+        lsh.insert("first", first)
+        with self.assertRaisesRegex(ValueError, "hash function"):
+            lsh.insert("second", incompatible)
+        with self.assertRaisesRegex(ValueError, "hash function"):
+            lsh.query(incompatible)
+
+        other = MinHashLSH(threshold=0.5, num_perm=128)
+        other.insert("second", incompatible)
+        with self.assertRaisesRegex(ValueError, "hash function"):
+            lsh.merge(other)
+
+    def test_lsh_and_forest_reject_different_permutations(self):
+        first = MinHash(128, hashfunc=fake_hash_func)
+        permutations = first.permutations.copy()
+        permutations[1, 0] += 1
+        incompatible = MinHash(
+            128,
+            seed=first.seed,
+            hashfunc=fake_hash_func,
+            permutations=permutations,
+            scheme=first.scheme,
+        )
+
+        lsh = MinHashLSH(threshold=0.5, num_perm=128)
+        lsh.insert("first", first)
+        with self.assertRaisesRegex(ValueError, "permutations"):
+            lsh.query(incompatible)
+
+        forest = MinHashLSHForest(num_perm=128)
+        forest.add("first", first)
+        with self.assertRaisesRegex(ValueError, "permutations"):
+            forest.add("second", incompatible)
+        forest.index()
+        with self.assertRaisesRegex(ValueError, "permutations"):
+            forest.query(incompatible, 1)
 
     def test_lshforest_mixed_scheme_raises(self):
         forest = MinHashLSHForest(num_perm=128)
