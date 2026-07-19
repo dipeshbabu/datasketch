@@ -1,6 +1,6 @@
 import os
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -71,6 +71,15 @@ def test_cassandra_schema_validation_and_set_upsert():
             ("set-upsert", (b"key", b"same")),
         ]
     )
+
+    session = Mock()
+    with (
+        patch.object(storage_module.CassandraSharedSession, "get_session", return_value=session),
+        patch.object(storage_module.c_cluster, "MonotonicTimestampGenerator", return_value=Mock()),
+        patch.object(storage_module.CassandraClient, "_validate_table_schema") as validate_schema,
+    ):
+        storage_module.CassandraClient({}, b"table", 100)
+    validate_schema.assert_called_once_with("lsh_table")
 
 
 def _clear_redis_keys(pattern="lsh_test*"):
