@@ -5,6 +5,7 @@ import pytest
 
 from datasketch.lsh import MinHashLSH
 from datasketch.minhash import MinHash
+from datasketch.storage import ordered_storage
 from datasketch.weighted_minhash import WeightedMinHashGenerator
 
 STORAGE_CONFIG_REDIS = {
@@ -107,6 +108,25 @@ class TestMinHashLSH:
         assert b"b" in lsh
         for i, H in enumerate(lsh.keys[b"a"]):
             assert b"a" in lsh.hashtables[i][H]
+
+    def test_ordered_storage_preserves_duplicate_values(self, storage_config):
+        storage = ordered_storage(storage_config, name=b"lsh_test_duplicate_values")
+        storage.insert(b"key", b"same", b"same")
+        assert list(storage.get(b"key")) == [b"same", b"same"]
+
+    def test_remove_empty_minhash_clears_every_band(self, storage_config):
+        lsh = MinHashLSH(threshold=0.5, num_perm=16, storage_config=storage_config, prepickle=False)
+        empty = MinHash(16)
+        lsh.insert(b"empty", empty)
+
+        band_hashes = list(lsh.keys[b"empty"])
+        assert len(band_hashes) == lsh.b
+        assert len(set(band_hashes)) == 1
+
+        lsh.remove(b"empty")
+        assert b"empty" not in lsh.keys
+        for band_hash, hashtable in zip(band_hashes, lsh.hashtables):
+            assert b"empty" not in hashtable.get(band_hash)
 
     def test_insert_non_bytes_key_raises_error(self, storage_config):
         """Test that inserting non-bytes keys with prepickle=False raises TypeError."""
