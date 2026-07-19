@@ -10,6 +10,7 @@ import base64
 import pickle
 import struct
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 
@@ -21,9 +22,10 @@ from datasketch import (
     MinHashLSHForest,
     WeightedMinHashGenerator,
 )
+from datasketch.aio import AsyncMinHashLSH
 from datasketch.b_bit_minhash import bBitMinHash
 from datasketch.hashfunc import sha1_hash32, sha1_hash64
-from datasketch.minhash import _fmix
+from datasketch.minhash import _check_minhash_compatibility, _fmix, _hashfunc_fingerprint
 from test.utils import fake_hash_func
 
 AFFINE_SCHEMES = ("affine32", "affine64")
@@ -32,6 +34,21 @@ ALL_SCHEMES = ("affine32", "affine64", "legacy")
 
 def alternate_fake_hash_func(data):
     return data + 1
+
+
+class StatefulHash:
+    def __init__(self, offset):
+        self.offset = offset
+
+    def __call__(self, data):
+        return fake_hash_func(data) + self.offset
+
+
+def make_closure_hash(offset):
+    def closure_hash(data):
+        return fake_hash_func(data) + offset
+
+    return closure_hash
 
 # --------------------------------------------------------------------------
 # Frozen format vectors. These freeze the affine schemes' permutation
@@ -372,6 +389,16 @@ class TestLSHSchemeGuards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hash function"):
             lsh.merge(other)
 
+    def test_hash_function_fingerprint_covers_callable_state_and_closures(self):
+        self.assertNotEqual(_hashfunc_fingerprint(StatefulHash(1)), _hashfunc_fingerprint(StatefulHash(2)))
+        self.assertNotEqual(_hashfunc_fingerprint(make_closure_hash(1)), _hashfunc_fingerprint(make_closure_hash(2)))
+
+    def test_legacy_scheme_metadata_is_upgraded(self):
+        compatibility = _check_minhash_compatibility("affine32", MinHash(16, scheme="affine32"))
+        self.assertEqual(compatibility[0], "affine32")
+        self.assertIsNotNone(compatibility[1])
+        self.assertIsNotNone(compatibility[2])
+
     def test_lsh_and_forest_reject_different_permutations(self):
         first = MinHash(128, hashfunc=fake_hash_func)
         permutations = first.permutations.copy()
@@ -421,6 +448,36 @@ class TestLSHSchemeGuards(unittest.TestCase):
         lsh = MinHashLSH(threshold=0.5, num_perm=128)
         lsh.insert("w1", gen.minhash(v))
         self.assertIn("w1", lsh.query(gen.minhash(v)))
+
+
+class TestAsyncLSHCompatibility(unittest.IsolatedAsyncioTestCase):
+    async def test_async_lsh_rejects_incompatible_hash_functions(self):
+        first = MinHash(16, hashfunc=fake_hash_func)
+        incompatible = MinHash(16, hashfunc=alternate_fake_hash_func)
+        lsh = AsyncMinHashLSH(
+            num_perm=16,
+            params=(4, 4),
+            storage_config={"type": "aiomongo"},
+            prepickle=False,
+        )
+        lsh.keys = Mock(
+            has_key=AsyncMock(return_value=False),
+            insert=AsyncMock(),
+        )
+        lsh.hashtables = [
+            Mock(
+                insert=AsyncMock(),
+                get=AsyncMock(return_value=[b"first"]),
+                has_key=AsyncMock(return_value=True),
+            )
+            for _ in range(lsh.b)
+        ]
+
+        await lsh._insert(b"first", first)
+        with self.assertRaisesRegex(ValueError, "hash function"):
+            await lsh.query(incompatible)
+        with self.assertRaisesRegex(ValueError, "hash function"):
+            await lsh._query_b(incompatible, lsh.b)
 
 
 class TestFrozenFormat(unittest.TestCase):
