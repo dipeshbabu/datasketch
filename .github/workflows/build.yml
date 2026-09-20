@@ -1,10 +1,7 @@
 name: Build and Verify Package
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,9 +43,9 @@ jobs:
           uv pip install dist/*.whl
           # Verify version and imports
           uv run python -c "import datasketch; print(f'Version: {datasketch.__version__}')"
-          uv run python -c "from datasketch import MinHash, HyperLogLog, MinHashLSH; print('✓ Core imports')"
-          uv run python -c "from datasketch import LeanMinHash, WeightedMinHash; print('✓ Additional imports')"
-          uv run python -c "from datasketch import MinHashLSHEnsemble, MinHashLSHForest; print('✓ LSH imports')"
+          uv run python -c "from datasketch import MinHash, HyperLogLog, MinHashLSH; print('âœ“ Core imports')"
+          uv run python -c "from datasketch import LeanMinHash, WeightedMinHash; print('âœ“ Additional imports')"
+          uv run python -c "from datasketch import MinHashLSHEnsemble, MinHashLSHForest; print('âœ“ LSH imports')"
 
       - name: Minimize uv cache
         run: uv cache prune --ci
