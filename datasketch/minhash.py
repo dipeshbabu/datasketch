@@ -5,6 +5,8 @@ import hashlib
 import marshal
 import warnings
 from collections.abc import Generator, Iterable
+from functools import partial
+from types import CodeType
 from typing import TYPE_CHECKING, Callable, Optional, Union
 
 try:
@@ -120,6 +122,16 @@ def _permutations_fingerprint(permutations) -> str:
     return digest.hexdigest()
 
 
+def _location_independent_code(code: CodeType) -> CodeType:
+    return code.replace(
+        co_filename="",
+        co_firstlineno=0,
+        co_consts=tuple(
+            _location_independent_code(value) if isinstance(value, CodeType) else value for value in code.co_consts
+        ),
+    )
+
+
 def _hashfunc_fingerprint(hashfunc: Callable) -> str:
     """Return a stable-enough fingerprint for a hash callable.
 
@@ -134,17 +146,23 @@ def _hashfunc_fingerprint(hashfunc: Callable) -> str:
         getattr(hashfunc, "__qualname__", callable_type.__qualname__),
     )
     digest.update(repr(parts).encode("utf-8"))
+    if isinstance(hashfunc, partial):
+        digest.update(_hashfunc_fingerprint(hashfunc.func).encode("ascii"))
+        digest.update(repr((hashfunc.args, sorted(hashfunc.keywords.items()))).encode("utf-8"))
     code = getattr(hashfunc, "__code__", None)
     if code is None and callable(hashfunc):
         code = getattr(hashfunc.__call__, "__code__", None)
     if code is not None:
-        digest.update(marshal.dumps(code))
+        digest.update(marshal.dumps(_location_independent_code(code)))
     digest.update(repr(getattr(hashfunc, "__defaults__", None)).encode("utf-8"))
     digest.update(repr(getattr(hashfunc, "__kwdefaults__", None)).encode("utf-8"))
     closure = getattr(hashfunc, "__closure__", None)
     if closure is not None:
         digest.update(repr(tuple(cell.cell_contents for cell in closure)).encode("utf-8"))
     digest.update(repr(getattr(hashfunc, "__dict__", None)).encode("utf-8"))
+    bound_instance = getattr(hashfunc, "__self__", None)
+    if bound_instance is not None:
+        digest.update(repr(getattr(bound_instance, "__dict__", None)).encode("utf-8"))
     return digest.hexdigest()
 
 

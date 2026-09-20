@@ -10,6 +10,8 @@ import base64
 import pickle
 import struct
 import unittest
+from functools import partial
+from types import FunctionType
 from unittest.mock import AsyncMock, Mock
 
 import numpy as np
@@ -41,6 +43,9 @@ class StatefulHash:
         self.offset = offset
 
     def __call__(self, data):
+        return fake_hash_func(data) + self.offset
+
+    def hash(self, data):
         return fake_hash_func(data) + self.offset
 
 
@@ -392,6 +397,33 @@ class TestLSHSchemeGuards(unittest.TestCase):
     def test_hash_function_fingerprint_covers_callable_state_and_closures(self):
         self.assertNotEqual(_hashfunc_fingerprint(StatefulHash(1)), _hashfunc_fingerprint(StatefulHash(2)))
         self.assertNotEqual(_hashfunc_fingerprint(make_closure_hash(1)), _hashfunc_fingerprint(make_closure_hash(2)))
+
+    def test_operations_reject_different_partial_arguments_and_bound_state(self):
+        for first_hash, second_hash in [
+            (partial(pow, exp=2), partial(pow, exp=3)),
+            (StatefulHash(1).hash, StatefulHash(2).hash),
+        ]:
+            first = MinHash(16, hashfunc=first_hash)
+            second = MinHash(16, hashfunc=second_hash)
+            first.update(2)
+            second.update(2)
+            with self.assertRaisesRegex(ValueError, "hash function"):
+                first.jaccard(second)
+
+    def test_persisted_index_accepts_hash_function_from_another_installation(self):
+        relocated = FunctionType(
+            fake_hash_func.__code__.replace(co_filename="another/installation/utils.py", co_firstlineno=100),
+            fake_hash_func.__globals__,
+            fake_hash_func.__name__,
+        )
+        first = MinHash(16, hashfunc=fake_hash_func)
+        first.update(2)
+        lsh = MinHashLSH(num_perm=16, params=(4, 4))
+        lsh.insert("first", first)
+        restored = pickle.loads(pickle.dumps(lsh))
+        second = MinHash(16, hashfunc=relocated)
+        second.update(2)
+        self.assertEqual(restored.query(second), ["first"])
 
     def test_legacy_scheme_metadata_is_upgraded(self):
         compatibility = _check_minhash_compatibility("affine32", MinHash(16, scheme="affine32"))
