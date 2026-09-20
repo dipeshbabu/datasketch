@@ -9,8 +9,11 @@ generated with datasketch 1.10.0.
 import base64
 import pickle
 import struct
+import subprocess
+import sys
 import unittest
 from functools import partial
+from pathlib import Path
 from types import FunctionType
 from unittest.mock import AsyncMock, Mock
 
@@ -424,6 +427,26 @@ class TestLSHSchemeGuards(unittest.TestCase):
         second = MinHash(16, hashfunc=relocated)
         second.update(2)
         self.assertEqual(restored.query(second), ["first"])
+
+    def test_persisted_index_accepts_builtin_partial_in_another_process(self):
+        first = MinHash(16, hashfunc=partial(pow, exp=2))
+        first.update(2)
+        lsh = MinHashLSH(num_perm=16, params=(4, 4))
+        lsh.insert("first", first)
+        probe = "\n".join([
+            "import pickle, sys",
+            "from functools import partial",
+            "from datasketch import MinHash",
+            "lsh = pickle.loads(sys.stdin.buffer.read())",
+            "query = MinHash(16, hashfunc=partial(pow, exp=2))",
+            "query.update(2)",
+            "assert lsh.query(query) == ['first']",
+        ])
+        result = subprocess.run(  # noqa: S603 - fixed probe under the current test interpreter.
+            [sys.executable, "-c", probe], input=pickle.dumps(lsh), capture_output=True,
+            cwd=Path(__file__).resolve().parents[1], check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     def test_legacy_scheme_metadata_is_upgraded(self):
         compatibility = _check_minhash_compatibility("affine32", MinHash(16, scheme="affine32"))

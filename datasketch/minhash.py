@@ -6,7 +6,7 @@ import marshal
 import warnings
 from collections.abc import Generator, Iterable
 from functools import partial
-from types import CodeType
+from types import CodeType, MethodType
 from typing import TYPE_CHECKING, Callable, Optional, Union
 
 try:
@@ -160,9 +160,8 @@ def _hashfunc_fingerprint(hashfunc: Callable) -> str:
     if closure is not None:
         digest.update(repr(tuple(cell.cell_contents for cell in closure)).encode("utf-8"))
     digest.update(repr(getattr(hashfunc, "__dict__", None)).encode("utf-8"))
-    bound_instance = getattr(hashfunc, "__self__", None)
-    if bound_instance is not None:
-        digest.update(repr(getattr(bound_instance, "__dict__", None)).encode("utf-8"))
+    if isinstance(hashfunc, MethodType):
+        digest.update(repr(getattr(hashfunc.__self__, "__dict__", None)).encode("utf-8"))
     return digest.hexdigest()
 
 
